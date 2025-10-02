@@ -1,7 +1,7 @@
 Copyright 2025-2026, Friend-zva, RodionovMaxim05
 SPDX-License-Identifier: LGPL-3.0-or-later
 
-  $ ../bin/akaML.exe <<EOF
+  $ ../bin/akaML.exe -o factorial.s <<EOF
   > let rec fac n =
   >   if n <= 1
   >   then 1
@@ -10,6 +10,8 @@ SPDX-License-Identifier: LGPL-3.0-or-later
   >      n*m)
   > 
   > let main = fac 4
+
+  $ cat factorial.s
   .section .text
     .globl fac
     .type fac, @function
