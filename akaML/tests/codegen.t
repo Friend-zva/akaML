@@ -40,8 +40,8 @@ SPDX-License-Identifier: LGPL-3.0-or-later
     ld t1, -16(s0)
     mul a0, t0, t1
   end_2:
-    addi sp, s0, 16
-    ld ra, 8(s0) # Epilogue starts
+    addi sp, s0, 16 # Epilogue starts
+    ld ra, 8(s0)
     ld s0, 0(s0)
     ret
   
@@ -54,8 +54,8 @@ SPDX-License-Identifier: LGPL-3.0-or-later
     addi s0, sp, 0 # Prologue ends
     li a0, 4
     call fac
-    addi sp, s0, 16
-    ld ra, 8(s0) # Epilogue starts
+    addi sp, s0, 16 # Epilogue starts
+    ld ra, 8(s0)
     ld s0, 0(s0)
     li a7, 93
     ecall
