@@ -154,14 +154,7 @@ static uint64_t *copy_object(uint64_t *obj) {
 
   *(GC.ptr_base) = SET_HEADER(size, tag);
   uint64_t *obj_sub = GC.ptr_base + 1;
-
-  if (tag == TAG_CLOSURE || tag == TAG_TUPLE) {
-    for (uint64_t i = 0; i < size; i++) {
-      obj_sub[i] = obj[i];
-    }
-  } else {
-    memcpy(obj_sub, obj, size * sizeof(uint64_t));
-  }
+  memcpy(obj_sub, obj, size * sizeof(uint64_t));
 
   GC.ptr_base += offset;
   return obj_sub;
@@ -185,11 +178,16 @@ static void update_args(uint64_t *ptr) {
   int step = get_step_to_header(ptr);
   if (step <= 0) {
     return;
-  } else if (step < 3) {
+  } else if (step == 1) {
     mark_and_copy(ptr);
   } else {
     uint64_t *header = ptr - step;
+    const uint64_t tag = GET_TAG(header);
     const uint64_t size = GET_SIZE(header);
+
+    if (tag == TAG_TUPLE) {
+      mark_and_copy(header + 1);
+    }
 
     for (uint64_t i = 2; i < size; i++) {
       mark_and_copy(header + i);
@@ -319,14 +317,13 @@ closure *copy_closure(const closure *src) {
 }
 
 void *applyN(closure *f, int64_t argc, ...) {
-  closure *f_closure = (closure *)f;
   assert(argc >= 0);
-  assert(f_closure->args_received + argc <= f_closure->arity);
+  assert(f->args_received + argc <= f->arity);
 
   va_list argp;
   va_start(argp, argc);
 
-  int64_t n = f_closure->arity;
+  int64_t n = f->arity;
   void **args_all;
 #ifdef ENABLE_GC
   uint64_t args_words =
@@ -336,17 +333,17 @@ void *applyN(closure *f, int64_t argc, ...) {
   args_all = (void **)malloc(n * sizeof(void *));
 #endif
 
-  for (int64_t i = 0; i < f_closure->args_received; i++) {
-    args_all[i] = f_closure->args[i];
+  for (int64_t i = 0; i < f->args_received; i++) {
+    args_all[i] = f->args[i];
   }
 
   for (int64_t i = 0; i < argc; i++) {
-    args_all[f_closure->args_received + i] = va_arg(argp, void *);
+    args_all[f->args_received + i] = va_arg(argp, void *);
   }
 
   va_end(argp);
 
-  if (f_closure->args_received + argc == n) {
+  if (f->args_received + argc == n) {
     void *ret;
 
     int64_t stack_count = (n > 8) ? (n - 8) : 0;
@@ -399,7 +396,7 @@ void *applyN(closure *f, int64_t argc, ...) {
         "mv   %[ret], a0\n"
 
         : [ret] "=r"(ret)
-        : [fn] "r"(f_closure->code), [a0] "r"(args_all[0]), [a1] "r"(args_all[1]),
+        : [fn] "r"(f->code), [a0] "r"(args_all[0]), [a1] "r"(args_all[1]),
           [a2] "r"(args_all[2]), [a3] "r"(args_all[3]), [a4] "r"(args_all[4]),
           [a5] "r"(args_all[5]), [a6] "r"(args_all[6]), [a7] "r"(args_all[7]),
           [stack_args] "r"(stack_args), [stack_count] "r"(stack_count),
@@ -410,10 +407,9 @@ void *applyN(closure *f, int64_t argc, ...) {
     return ret;
   }
 
-  closure *new_closure = copy_closure(f_closure);
+  closure *new_closure = copy_closure(f);
   for (int64_t i = 0; i < argc; i++) {
-    new_closure->args[new_closure->args_received++] =
-        args_all[f_closure->args_received + i];
+    new_closure->args[new_closure->args_received++] = args_all[f->args_received + i];
   }
 
   return new_closure;
@@ -437,7 +433,20 @@ tuple *create_tuple(int64_t argc, ...) {
   size_t size_in_bytes = sizeof(tuple) + argc * sizeof(void *);
   uint64_t size_in_words =
       ((uint64_t)size_in_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
-  tuple *t = (tuple *)gc_alloc(size_in_words, TAG_TUPLE);
+
+  tuple *t;
+#ifdef ENABLE_GC
+  t = (tuple *)gc_alloc(size_in_words, TAG_TUPLE);
+#else
+  t = (tuple *)malloc(size_in_bytes);
+#endif
+  if (!t) {
+    fprintf(stderr, "Tuple allocation error\n");
+#ifdef ENABLE_GC
+    destroy_gc();
+#endif
+    exit(1);
+  }
 
   t->arity = argc;
   for (int i = 0; i < t->arity; i++) {

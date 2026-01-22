@@ -219,8 +219,8 @@ SPDX-License-Identifier: LGPL-3.0-or-later
   GC    allocations: 98
   =================
   8=== GC Status ===
-  Current allocated: 1617
-  Free        space: 183
+  Current allocated: 1610
+  Free        space: 190
   Heap         size: 1800
   Current      bank: 1
   Total   allocated: 3086
