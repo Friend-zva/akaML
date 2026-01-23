@@ -19,15 +19,18 @@ int SIZE_HEAP = 1800;
 const uint8_t TAG_TUPLE = 0;
 const uint8_t TAG_CLOSURE = 247;
 
-// [63-49: size] [48-41: tag] [40-0: value]
+// [63-49: size] [48-41: tag] [40-33: forward pointer (in steps)] [32-0: value]
 #define SHIFT_SIZE 49
 #define SHIFT_TAG 41
+#define SHIFT_FP 33
 
 #define SET_HEADER(size, tag)                                                       \
   ((uint64_t)(((uint64_t)(size) << SHIFT_SIZE) | ((uint64_t)(tag) << SHIFT_TAG)))
+#define SET_FP(fp) ((uint64_t)(fp & 0xFF) << SHIFT_FP)
 #define GET_SIZE(ptr) ((*(uint64_t *)(ptr) >> SHIFT_SIZE) & 0x3FFF)
 #define GET_TAG(ptr) ((*(uint64_t *)(ptr) >> SHIFT_TAG) & 0xFF)
-#define IS_HEADER(value) (!((value) & 0xFFFFFFFFFF))
+#define GET_FP(ptr) ((*(uint64_t *)(ptr) >> SHIFT_FP) & 0xFF)
+#define IS_HEADER(value) (!((value) & 0xFFFFFFFF))
 #define IS_NOT_PTR(value) (value & 0x7)
 
 typedef struct {
@@ -131,18 +134,8 @@ static uint64_t *get_header(uint64_t *obj) {
   exit(1);
 }
 
-static int get_step_to_header(uint64_t *obj) {
-  is_in_bank_t is_in_bank = GET_IS_IN_BANK_CUR(GC);
-  for (uint64_t *ptr = obj; ptr != NULL && is_in_bank(ptr); ptr--) {
-    if (IS_HEADER(*ptr)) {
-      return (int)(obj - ptr);
-    }
-  }
-  return -1;
-}
-
 static uint64_t *copy_object(uint64_t *obj) {
-  uint64_t *header = get_header(obj);
+  uint64_t *header = obj - 1;
   const uint64_t size = GET_SIZE(header);
   const uint64_t tag = GET_TAG(header);
   const uint64_t offset = size + 1;
@@ -154,41 +147,26 @@ static uint64_t *copy_object(uint64_t *obj) {
 
   *(GC.ptr_base) = SET_HEADER(size, tag);
   uint64_t *obj_sub = GC.ptr_base + 1;
+
   memcpy(obj_sub, obj, size * sizeof(uint64_t));
+  *header |= SET_FP(obj_sub - GET_BANK_START(GC));
 
   GC.ptr_base += offset;
   return obj_sub;
 }
 
-static void update_ptr_on_stack(uint64_t *ptr_old, uint64_t *ptr_sub) {
-  uint64_t value_old = *ptr_old;
-  uint64_t *bottom = PTR_STACK;
-
-  for (uint64_t *ptr = ptr_old + 1; ptr <= PTR_STACK; ptr++) {
-    uint64_t value = *ptr;
-    if (value != 0 && value == value_old) {
-      *ptr = (uint64_t)ptr_sub;
-    }
-  }
-}
-
 static void mark_and_copy(uint64_t *ptr);
 
 static void update_args(uint64_t *ptr) {
-  int step = get_step_to_header(ptr);
-  if (step <= 0) {
-    return;
-  } else if (step == 1) {
-    mark_and_copy(ptr);
-  } else {
-    uint64_t *header = ptr - step;
-    const uint64_t tag = GET_TAG(header);
-    const uint64_t size = GET_SIZE(header);
+  uint64_t *header = ptr - 1;
+  const uint64_t tag = GET_TAG(header);
+  const uint64_t size = GET_SIZE(header);
 
-    if (tag == TAG_TUPLE) {
-      mark_and_copy(header + 1);
+  if (tag == TAG_CLOSURE) {
+    for (uint64_t i = 4; i < size; i++) {
+      mark_and_copy(header + i);
     }
-
+  } else if (tag == TAG_TUPLE) {
     for (uint64_t i = 2; i < size; i++) {
       mark_and_copy(header + i);
     }
@@ -202,12 +180,19 @@ static void mark_and_copy(uint64_t *ptr) {
   }
 
   is_in_bank_t is_in_bank = GET_IS_IN_BANK_OLD(GC);
-  uint64_t *ptr_cond = (uint64_t *)value;
+  uint64_t *ptr_cand = (uint64_t *)value;
 
-  if (is_in_bank(ptr_cond)) {
-    uint64_t *obj_sub = copy_object(ptr_cond);
-    update_ptr_on_stack(ptr, obj_sub);
-    update_args(obj_sub);
+  if (is_in_bank(ptr_cand)) {
+    uint64_t *obj_sub;
+
+    const uint64_t fp = GET_FP(ptr_cand - 1);
+    if (fp == 0) {
+      obj_sub = copy_object(ptr_cand);
+      update_args(obj_sub);
+    } else {
+      obj_sub = GET_BANK_START(GC) + fp;
+    }
+
     *ptr = (uint64_t)obj_sub;
   }
 }
@@ -221,8 +206,7 @@ void collect(void) {
   }
 
   GC.stats.bank_current = 1 - GC.stats.bank_current;
-  uint64_t *bank_start = GET_BANK_START(GC);
-  GC.ptr_base = bank_start;
+  GC.ptr_base = GET_BANK_START(GC);
 
   for (uint64_t *ptr = top; ptr <= bottom; ptr++) {
     mark_and_copy(ptr);
@@ -233,13 +217,11 @@ void collect(void) {
 
 uint64_t *gc_alloc(uint64_t size, uint64_t tag) {
   const uint64_t offset = size + 1;
-  uint64_t *bank_final = GET_BANK_FINAL(GC);
 
-  if (GC.ptr_base + offset > bank_final) {
+  if (GC.ptr_base + offset > GET_BANK_FINAL(GC)) {
     collect();
 
-    bank_final = GET_BANK_FINAL(GC);
-    if (GC.ptr_base + offset > bank_final) {
+    if (GC.ptr_base + offset > GET_BANK_FINAL(GC)) {
       fprintf(stderr, "Out of memory after GC\n");
       destroy_gc();
       exit(1);
@@ -270,11 +252,11 @@ typedef struct {
 
 closure *alloc_closure(void *func, int64_t arity) {
   size_t size_in_bytes = sizeof(closure) + arity * sizeof(void *);
-  uint64_t size_in_words =
-      ((uint64_t)size_in_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
 
   closure *clos;
 #ifdef ENABLE_GC
+  uint64_t size_in_words =
+      ((uint64_t)size_in_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
   clos = (closure *)gc_alloc(size_in_words, TAG_CLOSURE);
 #else
   clos = (closure *)malloc(size_in_bytes);
@@ -431,11 +413,11 @@ tuple *create_tuple(int64_t argc, ...) {
   va_start(argp, argc);
 
   size_t size_in_bytes = sizeof(tuple) + argc * sizeof(void *);
-  uint64_t size_in_words =
-      ((uint64_t)size_in_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
 
   tuple *t;
 #ifdef ENABLE_GC
+  uint64_t size_in_words =
+      ((uint64_t)size_in_bytes + sizeof(uint64_t) - 1) / sizeof(uint64_t);
   t = (tuple *)gc_alloc(size_in_words, TAG_TUPLE);
 #else
   t = (tuple *)malloc(size_in_bytes);
