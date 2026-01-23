@@ -15,14 +15,14 @@ void print_int(long n) { printf("%ld", TO_ML_INTEGER(n)); }
 
 /* ========== Garbage Collector ========== */
 
-int SIZE_HEAP = 1800;
+int SIZE_HEAP = 1800; // less then 2^11 (for forward pointer)
 const uint8_t TAG_TUPLE = 0;
 const uint8_t TAG_CLOSURE = 247;
 
-// [63-49: size] [48-41: tag] [40-33: forward pointer (in steps)] [32-0: value]
+// [63-49: size] [48-41: tag] [40-30: forward pointer (offset)] [29-0: dummy]
 #define SHIFT_SIZE 49
 #define SHIFT_TAG 41
-#define SHIFT_FP 33
+#define SHIFT_FP 30
 
 #define SET_HEADER(size, tag)                                                       \
   ((uint64_t)(((uint64_t)(size) << SHIFT_SIZE) | ((uint64_t)(tag) << SHIFT_TAG)))
@@ -30,7 +30,7 @@ const uint8_t TAG_CLOSURE = 247;
 #define GET_SIZE(ptr) ((*(uint64_t *)(ptr) >> SHIFT_SIZE) & 0x3FFF)
 #define GET_TAG(ptr) ((*(uint64_t *)(ptr) >> SHIFT_TAG) & 0xFF)
 #define GET_FP(ptr) ((*(uint64_t *)(ptr) >> SHIFT_FP) & 0xFF)
-#define IS_HEADER(value) (!((value) & 0xFFFFFFFF))
+#define IS_HEADER(value) (!((value) & 0x4FFFFFFF))
 #define IS_NOT_PTR(value) (value & 0x7)
 
 typedef struct {
@@ -120,19 +120,6 @@ void print_gc_status(void) {
 
 static uint64_t *PTR_STACK = NULL;
 void set_ptr_stack(uint64_t *ptr_stack) { PTR_STACK = ptr_stack; }
-
-static uint64_t *get_header(uint64_t *obj) {
-  is_in_bank_t is_in_bank = GET_IS_IN_BANK_OLD(GC);
-  for (uint64_t *ptr = obj; ptr != NULL && is_in_bank(ptr); ptr--) {
-    if (IS_HEADER(*ptr)) {
-      return ptr;
-    }
-  }
-
-  fprintf(stderr, "Incorrectly created header or it doesn't exist\n");
-  destroy_gc();
-  exit(1);
-}
 
 static uint64_t *copy_object(uint64_t *obj) {
   uint64_t *header = obj - 1;
