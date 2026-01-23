@@ -317,6 +317,7 @@ and push_stack_args env stack_args =
 and gen_c_exp env dst = function
   | CIExp i_exp -> gen_i_exp env dst i_exp
   | CExp_apply (IExp_ident fname, IExp_unit, []) ->
+    let* env = emit_save_caller_regs env in
     emit call fname;
     return env
   | CExp_apply (IExp_ident op, i_exp1, [ i_exp2 ]) when Ast.is_bin_op op ->
